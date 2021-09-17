@@ -1,0 +1,168 @@
+from time import sleep
+
+import requests
+from bs4 import BeautifulSoup
+from redfin import Redfin
+from selenium import webdriver
+from selenium.common.exceptions import NoSuchElementException
+from selenium.webdriver.chrome.options import Options
+
+base_url = 'https://www.seetheproperty.com/story/39{}'
+
+REDFIN_CLIENT = Redfin()
+
+
+def address_is_listed(address):
+    response = REDFIN_CLIENT.search(address)
+
+    url = response['payload']['exactMatch']['url']
+    initial_info = REDFIN_CLIENT.initial_info(url)
+    property_id = initial_info['payload']['propertyId']
+    try:
+        listing_id = initial_info['payload']['listingId']
+    # Have to assume that a lack of listing ID means it's unlisted.
+    except KeyError:
+        return False
+    avm_details = REDFIN_CLIENT.avm_details(property_id, listing_id)
+    return avm_details['payload']['isActivish']
+
+
+def verify_austin(url):
+    # Verify Austin
+    page = requests.get(url)
+    soup = BeautifulSoup(page.content, "html.parser")
+    title = soup.find_all("title")
+
+    is_in_austin = False
+    address = None
+    if title:
+        title = title[0].text
+        match = ('Austin, TX' in title)
+
+        if match:
+            is_in_austin = True
+            address_pieces = title.split(',')
+            address = ','.join(address_pieces[:3])
+
+    return is_in_austin, address
+
+
+def init_driver(url):
+    opts = Options()
+    opts.add_argument("--headless")
+    driver = webdriver.Chrome('./chromedriver', options=opts)
+
+    # Verify Type of House
+    driver.get(url)
+    sleep(1)
+    return driver
+
+def _determine_size(driver):
+    # Has enough space
+    try:
+        lot_size = driver.find_element_by_xpath(
+            "//span[text()='lot size']/preceding-sibling::h3").text
+        # Account for folks putting "acres" at the end of the size.
+        lot_size = lot_size.split(' ')[0]
+        lot_size = float(lot_size)
+        is_enough_outdoor_space = lot_size > 0.13
+    except NoSuchElementException:
+        is_enough_outdoor_space = True
+
+    try:
+        inside_space = driver.find_element_by_xpath(
+            "//span[text()='square feet']/preceding-sibling::h3").text
+        # Account for folks putting "acres" at the end of the size.
+        inside_space = float(inside_space.replace(',', ''))
+        is_enough_indoor_space = inside_space > 1500
+    except NoSuchElementException:
+        is_enough_indoor_space = True
+
+    return is_enough_outdoor_space and is_enough_indoor_space
+
+def _determine_type(driver):
+    try:
+        house_type = driver.find_element_by_xpath(
+            "//span[text()='Property Type']/following-sibling::span").text
+        is_single_family = house_type == 'Single Family'
+    except NoSuchElementException:
+        is_single_family = True
+
+    return is_single_family
+
+
+def _determine_if_for_sale(driver):
+    try:
+        for_sale = driver.find_element_by_xpath(
+            "//span[text()='Listing Type']/following-sibling::span"
+        ).text
+        is_for_sale = for_sale == 'For Sale'
+    except NoSuchElementException:
+        is_for_sale = True
+
+    return is_for_sale
+
+def _determine_price(driver):
+    # Check price
+    try:
+        price = driver.find_element_by_xpath(
+            "//span[text()='asking']/preceding-sibling::h3").text
+        price = float(price.replace(',', '').replace('$', '').replace(' ', ''))
+        is_in_budget = price < 500000
+    except NoSuchElementException:
+        is_in_budget = True
+    return is_in_budget
+
+def _determine_beds(driver):
+    # Has enough bedrooms
+    try:
+        beds = driver.find_element_by_xpath(
+            "//span[text()='bed']/preceding-sibling::h3").text
+        beds = int(beds)
+        has_enough_beds = beds > 3
+    except NoSuchElementException:
+        has_enough_beds = True
+    return has_enough_beds
+
+
+def determine_if_suitable(url):
+
+    driver = init_driver(url)
+
+    # If the element doesn't appear, we should assume broadly.
+    is_single_family = _determine_type(driver)
+    is_for_sale = _determine_if_for_sale(driver)
+    is_in_budget = _determine_price(driver)
+    has_enough_beds = _determine_beds(driver)
+    is_enough_space = _determine_size(driver)
+
+    if is_in_austin and is_single_family and is_for_sale and is_in_budget and has_enough_beds and is_enough_space:
+        return True
+
+potential = []
+issue_addresses = []
+for i in range(5000, 7000):
+    url = base_url.format(i)
+    # if i % 50 == 0:
+    #     print(f'Currently looking at {url}')
+
+    try:
+        is_in_austin, address = verify_austin(url)
+
+        if address == 'Sample Tour, Austin, TX 78749':
+            # Effectively ignore this one, it hasn't been populated.
+            continue
+
+        if is_in_austin:
+            is_suitable = determine_if_suitable(url)
+            if is_suitable:
+                is_listed = address_is_listed(address)
+                # We want to find the ones currently off-market.
+                if not is_listed:
+                    print(f'found a match at {url}!')
+                    potential.append(url)
+    except Exception:
+        issue_addresses.append((address, url))
+
+print(f'Potentials! {potential}')
+print(f'Broken Shit! {issue_addresses}')
