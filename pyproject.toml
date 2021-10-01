@@ -10,6 +10,8 @@ beautifulsoup4 = "^4.10.0"
 requests = "^2.26.0"
 selenium = "^3.141.0"
 redfin = "^0.1.1"
+click = "^8.0.1"
+retry = "^0.9.2"
 
 [tool.poetry.dev-dependencies]
 bpython = "^0.21"
