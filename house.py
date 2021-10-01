@@ -41,8 +41,8 @@ def verify_location(url, location):
 
         if match:
             is_in_austin = True
-            address_pieces = title.split(',')
-            address = ','.join(address_pieces[:3])
+        address_pieces = title.split(',')
+        address = ','.join(address_pieces[:3])
 
     return is_in_austin, address
 
@@ -150,9 +150,7 @@ def _determine_beds(driver, ideal_beds):
     return has_enough_beds
 
 
-def determine_if_suitable(url, beds, price):
-
-    driver = init_driver(url)
+def determine_if_suitable(driver, beds, price):
 
     # If the element doesn't appear, we should assume broadly.
     is_single_family = _determine_type(driver)
@@ -164,33 +162,66 @@ def determine_if_suitable(url, beds, price):
     if is_single_family and is_for_sale and is_in_budget and has_enough_beds and is_enough_space:
         return True
 
+def _determine_if_draft(driver):
+
+    try:
+        draft_status = driver.find_element_by_class_name("draft-message").text
+        is_draft = 'draft' in draft_status
+    except NoSuchElementException:
+        is_draft = False
+    return is_draft
+
+
+def _determine_if_cancelled(driver):
+    try:
+        error_status = driver.find_element_by_class_name("error-message-container")
+        # If it's an error message, there's only one h2
+        error_message = error_status.find_element_by_tag_name('h2')[0].text
+        is_cancelled = 'Cancelled' in error_message
+    except NoSuchElementException:
+        is_cancelled = False
+    return is_cancelled
+
 
 def run_house_search(beds, loc, price, id_start, increments):
     potential = []
     issue_addresses = []
+    drafts = []
+    cancelled = []
     for i in range(id_start, id_start + increments):
         url = BASE_URL.format(i)
         # if i % 50 == 0:
         #     print(f'Currently looking at {url}')
 
+        is_in_location, address = verify_location(url, loc)
+        if 'Sample Tour' in address:
+            # Effectively ignore this one, it hasn't been populated.
+            continue
         try:
-            is_in_austin, address = verify_location(url, loc)
+            if is_in_location:
+                driver = init_driver(url)
 
-            if 'Sample Tour' in address:
-                # Effectively ignore this one, it hasn't been populated.
-                continue
-
-            if is_in_austin:
-                is_suitable = determine_if_suitable(url, beds, price)
+                is_suitable = determine_if_suitable(driver, beds, price)
                 if is_suitable:
                     is_listed = address_is_listed(address)
                     # We want to find the ones currently off-market.
                     if not is_listed:
-                        print(f'found a match at {url}!')
-                        potential.append(url)
+
+                        # Check to see if it's still in drafts.
+                        is_draft = _determine_if_draft(driver)
+                        is_cancelled = _determine_if_cancelled(driver)
+                        if is_draft:
+                            drafts.append((address, url))
+                        elif is_cancelled:
+                            cancelled.append((address, url))
+                        else:
+                            print(f'found a match at {url}!')
+                            potential.append(url)
         except Exception:
             issue_addresses.append((address, url))
 
     print(f'Potentials! {potential}')
     print(f'Broken Shit! {issue_addresses}')
+    print(f'Drafts! {drafts}')
+    print(f'Cancelled! {cancelled}')
 
